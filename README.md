@@ -59,6 +59,7 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - Git for Windows + GitHub CLI (`gh`) installed locally; authenticated via `gh auth login` (browser-based, no passwords).
 - Local repo initialized with a clean folder structure: `dags/` (Airflow), `dbt/` (dbt Cloud project), `ingestion/` (Python scripts), `docs/` (documentation).
 - Full step-by-step walkthrough, including a Windows Command Prompt gotcha (multi-line paste issue) and the fix, documented in [`docs/git-setup.md`](./docs/git-setup.md).
+- Quick reference of every Git/GitHub CLI command used, with explanations: [`docs/git-commands-reference.md`](./docs/git-commands-reference.md)
 
 ---
 
