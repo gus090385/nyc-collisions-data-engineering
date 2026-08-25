@@ -106,7 +106,7 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 ### 🔄 In Progress / Pending
 - [x] Step 1: Schema/data model design (staging → intermediate → marts)
 - [x] **Step 2: Git/GitHub repo setup** — GitHub account created, Git for Windows + GitHub CLI installed and authenticated (`gh auth login`), local repo initialized at `D:\Projects\nyc-collisions-data-engineering` with `dags/`, `dbt/`, `ingestion/`, `docs/` folder structure. Full walkthrough: [`docs/git-setup.md`](./docs/git-setup.md)
-- [ ] Step 3: AWS setup (S3 bucket, IAM, Athena workgroup/database)
+- [ ] **Step 3: AWS setup** (S3 bucket, IAM, Athena workgroup/database) — **currently here**
 - [ ] Step 4: Python ingestion script (Socrata API → S3)
 - [ ] Step 5: Athena table definitions (raw S3 data → queryable tables)
 - [ ] Step 6: dbt Cloud setup (connect to Athena, build staging/intermediate/marts models + tests)
