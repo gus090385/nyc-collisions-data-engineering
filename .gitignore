@@ -1,0 +1,48 @@
+# --- Secrets & credentials ---
+.env
+*.env
+credentials.json
+aws_credentials
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+
+# --- dbt ---
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+.dbt/
+
+# --- Airflow ---
+dags/__pycache__/
+logs/
+airflow.db
+airflow.cfg
+airflow-webserver.pid
+plugins/__pycache__/
+*.log
+
+# --- Docker ---
+.docker/
+
+# --- OS / editor junk ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Data files (raw pulls shouldn't be committed) ---
+*.csv
+*.json
+!docs/**/*.json
+data/
+raw/
