@@ -54,6 +54,13 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - Docker Desktop via WSL2 (confirmed feasible for running Airflow's containers at this RAM level)
 - Local project path: `D:\Projects\nyc-collisions-data-engineering`
 
+### AWS Setup (Summary)
+- AWS account created (Paid plan, not the 6-month auto-closing Free plan), region standardized on **us-east-1 (N. Virginia)**.
+- Root account secured with MFA; billing alerts and a budget configured as a safety net.
+- IAM user `data-eng-user` created for all daily work (root reserved for account-level tasks only).
+- S3 bucket **`nyc-collisions-gustavo-raw`** created in `us-east-1` with `crashes/`, `vehicles/`, `person/` folders for raw data landing.
+- Full step-by-step walkthrough: [`docs/aws-setup.md`](./docs/aws-setup.md)
+
 ### Version Control Setup (Summary)
 - GitHub account created; repo `nyc-collisions-data-engineering` (public) will host all project code.
 - Git for Windows + GitHub CLI (`gh`) installed locally; authenticated via `gh auth login` (browser-based, no passwords).
