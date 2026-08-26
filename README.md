@@ -58,7 +58,8 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - AWS account created (Paid plan, not the 6-month auto-closing Free plan), region standardized on **us-east-1 (N. Virginia)**.
 - Root account secured with MFA; billing alerts and a budget configured as a safety net.
 - IAM user `data-eng-user` created for all daily work (root reserved for account-level tasks only).
-- S3 bucket **`nyc-collisions-gustavo-raw`** created in `us-east-1` with `crashes/`, `vehicles/`, `person/` folders for raw data landing.
+- S3 bucket **`nyc-collisions-gustavo-raw`** created in `us-east-1` with `crashes/`, `vehicles/`, `person/`, and `athena-query-results/` folders.
+- Athena configured: query result location set to the S3 bucket's `athena-query-results/` folder; dedicated database **`nyc_collisions`** created via SQL and set as active.
 - Full step-by-step walkthrough: [`docs/aws-setup.md`](./docs/aws-setup.md)
 
 ### Version Control Setup (Summary)
@@ -113,8 +114,8 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 ### 🔄 In Progress / Pending
 - [x] Step 1: Schema/data model design (staging → intermediate → marts)
 - [x] **Step 2: Git/GitHub repo setup** — GitHub account created, Git for Windows + GitHub CLI installed and authenticated (`gh auth login`), local repo initialized at `D:\Projects\nyc-collisions-data-engineering` with `dags/`, `dbt/`, `ingestion/`, `docs/` folder structure. Full walkthrough: [`docs/git-setup.md`](./docs/git-setup.md)
-- [ ] **Step 3: AWS setup** (S3 bucket, IAM, Athena workgroup/database) — **currently here**
-- [ ] Step 4: Python ingestion script (Socrata API → S3)
+- [x] **Step 3: AWS setup** — Account, MFA, billing alerts, IAM user, S3 bucket (`nyc-collisions-gustavo-raw`), Athena query settings + `nyc_collisions` database. Full details: [`docs/aws-setup.md`](./docs/aws-setup.md)
+- [ ] **Step 4: Python ingestion script** (Socrata API → S3) — **currently here**
 - [ ] Step 5: Athena table definitions (raw S3 data → queryable tables)
 - [ ] Step 6: dbt Cloud setup (connect to Athena, build staging/intermediate/marts models + tests)
 - [ ] Step 7: Airflow (Docker) DAG — orchestrates ingestion + dbt Cloud trigger

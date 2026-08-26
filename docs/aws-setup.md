@@ -35,11 +35,21 @@ This document records how AWS was configured for this project, step by step.
 nyc-collisions-gustavo-raw/
 ├── crashes/
 ├── vehicles/
-└── person/
+├── person/
+└── athena-query-results/
 ```
-Each folder will hold raw JSON/CSV extracts from the corresponding Socrata API table, landed there by the Python ingestion script (Step 4).
+Each of `crashes/`, `vehicles/`, `person/` will hold raw JSON/CSV extracts from the corresponding Socrata API table, landed there by the Python ingestion script (Step 4). `athena-query-results/` stores Athena's query output files, kept separate from raw data.
+
+## 6. Athena Setup
+- Opened Athena in the **classic Query editor** (not "SageMaker Unified Studio," which AWS now nudges new users toward — the classic editor is simpler and sufficient for this project).
+- Configured **query result location**: `s3://nyc-collisions-gustavo-raw/athena-query-results/` (Query settings tab → Manage → Query result encryption).
+- Left encryption and bucket-owner-control options off/default — not needed for a personal project.
+- Created a dedicated database via SQL in the query editor:
+  ```sql
+  CREATE DATABASE nyc_collisions;
+  ```
+- Selected `nyc_collisions` as the active database (instead of the default `default` database) — this is where all Athena tables for this project (crashes, vehicles, person, and later dbt models) will live.
 
 ## Next Steps (to be added to this doc as completed)
-- [ ] Set up Athena workgroup/database pointing at this S3 bucket
 - [ ] (Optional) Scope IAM permissions down from AdministratorAccess to least-privilege for S3/Athena/Glue only
 - [ ] Note S3 bucket ARN / URI for use in Python ingestion script and Athena table DDL
