@@ -136,3 +136,27 @@ Same as `dir`, but also shows hidden files — needed to confirm dot-files like 
 ---
 
 *This is a living reference — updated as new Git commands are introduced later in the project (branching, `.gitignore` edits, feature branches, etc.).*
+
+---
+
+## Related: Python Environment Commands (not Git, but used alongside it)
+
+```
+python -m venv venv
+```
+Creates an isolated Python virtual environment in a folder named `venv`, scoping installed packages to this project only.
+
+```
+venv\Scripts\activate
+```
+Activates the virtual environment (Windows). Must be run in every new terminal session before working on the project. Prompt shows `(venv)` when active.
+
+```
+pip install <package1> <package2> ...
+```
+Installs Python packages into the active virtual environment.
+
+```
+pip freeze > ingestion/requirements.txt
+```
+Records exact installed package versions into a file, so the environment can be reproduced elsewhere with `pip install -r requirements.txt`.
