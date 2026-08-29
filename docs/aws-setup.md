@@ -36,9 +36,11 @@ nyc-collisions-gustavo-raw/
 ├── crashes/
 ├── vehicles/
 ├── person/
-└── athena-query-results/
+├── athena-query-results/
+└── pipeline-state/
+    └── last_run.json      # per-table high-water-mark timestamps for incremental ingestion
 ```
-Each of `crashes/`, `vehicles/`, `person/` will hold raw JSON/CSV extracts from the corresponding Socrata API table, landed there by the Python ingestion script (Step 4). `athena-query-results/` stores Athena's query output files, kept separate from raw data.
+Each of `crashes/`, `vehicles/`, `person/` will hold raw JSON/CSV extracts from the corresponding Socrata API table, landed there by the Python ingestion script (Step 4). `athena-query-results/` stores Athena's query output files, kept separate from raw data. `pipeline-state/` was added later (Step 4) to support incremental ingestion — see [`docs/ingestion-setup.md`](./ingestion-setup.md) for the full mechanism.
 
 ## 6. Athena Setup
 - Opened Athena in the **classic Query editor** (not "SageMaker Unified Studio," which AWS now nudges new users toward — the classic editor is simpler and sufficient for this project).

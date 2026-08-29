@@ -140,8 +140,52 @@ Since Crashes and Vehicles now had two full files each (the earlier `T042616Z` v
 ### ⚠️ Verification caveat
 The row counts above come directly from the ingestion script's own logs (confirmed, not inferred this time). **Planned sanity check once Athena is set up (Step 5):** query row counts for `crashes`, `vehicles`, and `person` tables in Athena and confirm they match these numbers (2,269,187 / 4,551,002 / 5,984,110) — validates that S3 → Athena table definitions aren't dropping or duplicating rows.
 
+## 8. Incremental Ingestion Design
+
+A natural question for any pipeline: how do we detect and pull only *new* data from the source on subsequent runs, instead of re-pulling everything every time?
+
+### Mechanism: Socrata's `:updated_at` system field
+Socrata automatically tracks a system field `:updated_at` on every row, set whenever a record is created **or amended**. Records can be filtered using SoQL's `$where` parameter:
+```
+$where=:updated_at > '2026-08-29T02:27:42.739'
+```
+**Gotcha:** system fields must be referenced with a **leading colon** in SoQL (`:updated_at`, not `updated_at`) in both `$where` and `$select` clauses. Omitting the colon returns a `400 Bad Request`.
+
+### State tracking: stored in S3, not locally
+The script tracks a per-table "high-water mark" (the timestamp of the last successful run) in a small state file: `s3://nyc-collisions-gustavo-raw/pipeline-state/last_run.json`. This lives in **S3 rather than on the local machine** so it remains readable/writable even after this script is later run inside ephemeral Airflow/Docker containers (Step 7), which may not persist local disk state between runs.
+
+Example state file contents:
+```json
+{
+  "crashes": "2026-08-29T02:34:24.451",
+  "vehicles": "2026-08-29T02:34:24.451",
+  "person": "2026-08-29T02:34:24.451"
+}
+```
+
+### New script flags
+```
+python ingestion/ingest.py --seed-state       # initialize state file with "now", no data fetched
+python ingestion/ingest.py --incremental       # fetch only records changed since last state
+```
+
+**`--seed-state`** was necessary because a full pull had already been completed manually before incremental mode existed — running `--incremental` without seeding first would have had no prior state to compare against, causing it to treat the run as "first ever" and re-pull everything, undoing the clean, deduplicated S3 state. Running `--seed-state` once establishes a baseline ("everything before this moment is already captured") without touching S3 data.
+
+### Handling amended records (expected duplicates across files)
+Because crash reports can be revised after the fact (per NYC's own dataset notes: *"the data is preliminary and subject to change when the MV-104AN forms are amended"*), an incremental pull may legitimately re-fetch a `collision_id`/`unique_id` that already exists in an earlier file, just with updated field values. **This is expected, not a bug.** Deduplication — keeping only the most recently ingested version of each ID — is handled downstream in dbt's staging layer (Step 6), typically via `ROW_NUMBER() OVER (PARTITION BY id ORDER BY ingested_at DESC)`, keeping only row #1 per ID. The ingestion script's job is simply to land all versions; deduplication is a modeling decision, not an ingestion one.
+
+### Known source-side limitation (as of this writing)
+NYC Open Data's Crashes and Vehicles datasets are currently flagged as **temporarily not updating** while their automated update process is being fixed (expected resolution: August 2026; last actual data update: July 31, 2026). This was verified directly against the dataset's public status note. Practical implication: incremental runs during this window will correctly return 0 new/changed records — this was confirmed in testing and is the *expected*, correct behavior, not a sign of a broken pipeline.
+
+### Testing performed
+1. Ran `--seed-state` once → state file created in S3 with current timestamp for all 3 tables.
+2. Ran `--incremental` → initially failed with `400 Bad Request` due to the missing colon on `:updated_at` (see Gotcha above); fixed and re-ran.
+3. Re-ran `--incremental` → succeeded, correctly returned 0 records for all 3 tables (consistent with the known source-side update pause), and advanced the state file's timestamps.
+
 ## Next Steps
 - [x] Run the full ingestion for all three tables (completed via the accidental-but-successful full re-run, `T054618Z`)
 - [x] Confirm full files landed correctly in S3 (verified: 1 test + 1 full file per folder, duplicates cleaned up)
+- [x] Design and implement incremental ingestion (`--incremental` / `--seed-state`), tested successfully
 - [ ] **Sanity check:** once Athena tables are defined, compare row counts per table against the confirmed totals above (2,269,187 / 4,551,002 / 5,984,110)
 - [ ] Move to Step 5: define Athena tables over this raw S3 data
+- [ ] (Future, Step 7) Wire `--incremental` into the Airflow DAG for scheduled runs

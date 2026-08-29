@@ -46,6 +46,21 @@ Native Athena connector with no licensing friction, genuinely free, and produces
 - **Marts — Star Schema (core)**: `fct_crashes` (fact table) + `dim_vehicles`, `dim_persons` (dimension tables). This is the primary, resume-relevant dimensional model.
 - **Marts — BI layer (on top of star schema)**: `fct_crash_details` — a single flattened, denormalized table pre-joining fact + dims, built specifically for Looker Studio to query directly (simpler for BI tool consumption, common real-world pattern).
 
+### How Incremental Ingestion Works
+Rather than re-downloading millions of rows on every run, the ingestion script can pull **only records that are new or have changed** since the last successful run. Here's the mechanism, end to end:
+
+1. **Socrata tracks changes automatically.** Every row in a Socrata dataset carries a hidden system field, `:updated_at`, which gets set the moment a record is created *or* later amended (NYC crash reports are sometimes revised after the fact). This field can be queried directly: `$where=:updated_at > '<timestamp>'`.
+2. **A "high-water mark" is stored per table, in S3 — not on the laptop.** After each successful run, the script writes the current timestamp into a small JSON file at `s3://nyc-collisions-gustavo-raw/pipeline-state/last_run.json`, one entry per table. Storing this in S3 (rather than as a local file) matters because Step 7's Airflow DAG will eventually run this script inside Docker containers, which don't reliably persist local disk state between runs — S3 does.
+3. **Each incremental run reads that file first**, then asks Socrata only for rows changed after each table's stored timestamp — turning a multi-million-row full pull into a query that, most days, returns only a handful of rows (or zero, if nothing changed).
+4. **A new, small, timestamped file is uploaded to S3** alongside the existing full-data file for that table — the pipeline never overwrites prior files, it only adds to them.
+5. **Amended records are handled downstream, not at ingestion.** If NYPD revises an existing crash report, that `collision_id` will legitimately appear again in a later incremental file with updated values — meaning multiple versions of the same ID can exist across different S3 files. This is by design. Deduplication (keeping only the latest version of each ID) happens in dbt's staging layer (Step 6), typically via `ROW_NUMBER() OVER (PARTITION BY id ORDER BY ingested_at DESC)`.
+
+**Two supporting script flags:**
+- `--seed-state` — writes "now" as the baseline for all tables, without fetching any data. Used once, right after an existing full pull, so the very first `--incremental` run doesn't mistake "no prior state" for "first run ever" and accidentally re-pull everything.
+- `--incremental` — the actual incremental run, using whatever state currently exists.
+
+**Current status:** implemented and tested successfully — correctly returns 0 changed records for all three tables, consistent with NYC Open Data's own notice that this dataset's automated updates are temporarily paused (expected fix: August 2026). The logic is ready to pick up real changes automatically once the source resumes updating.
+
 ### Why dbt built-in tests (not Great Expectations)?
 dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) run automatically as part of the dbt Cloud job and give solid coverage — missing values, duplicate crash IDs, orphaned vehicle/person records, invalid categorical values — without adding a separate Python framework to configure and maintain. Great Expectations remains a natural "v2" enhancement once the core pipeline is stable.
 
@@ -77,7 +92,8 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - **Auth gotcha fixed:** Socrata's current API Key system requires HTTP Basic Auth (Key ID + Secret), not the older `X-App-Token` header — full explanation in the doc below.
 - Script supports `--test` (small sample, ~1,000 rows/table) and `--tables <name(s)>` (run specific table(s) only) flags via the same file — no code changes needed to switch modes. **Windows gotcha:** always invoke with the explicit `python` prefix (`python ingestion\ingest.py`) — running `ingest.py` directly can silently drop command-line arguments.
 - **Full ingestion complete.** All three tables successfully pulled and uploaded to S3: Crashes (2,269,187 records), Vehicles (4,551,002 records), Person (5,984,110 records).
-- Full step-by-step walkthrough, including two gotchas encountered (Socrata auth fix, Windows argument-passing issue) and their fixes: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md)
+- **Incremental ingestion designed and tested.** Uses Socrata's `:updated_at` system field with a per-table high-water-mark state file stored in S3 (`pipeline-state/last_run.json`, not local disk — survives across Docker/Airflow runs later). New flags: `--seed-state` (initialize baseline) and `--incremental` (fetch only changed records). Amended records are expected to create duplicate IDs across files by design; deduplication happens downstream in dbt's staging layer, not at ingestion time.
+- Full step-by-step walkthrough, including three gotchas encountered (Socrata auth fix, Windows argument-passing issue, SoQL system-field colon syntax) and their fixes: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md)
 
 ---
 

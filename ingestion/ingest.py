@@ -7,7 +7,8 @@ Pulls data from three related Socrata (NYC Open Data) tables:
   - Person   (f55k-p6yu)
 
 For each table:
-  1. Paginate through the Socrata API to fetch all records
+  1. Paginate through the Socrata API to fetch all records (or only records
+     changed since the last run, in --incremental mode)
   2. Save the raw JSON response to a local file
   3. Upload that file to the corresponding S3 folder
 
@@ -16,9 +17,30 @@ file (never committed to Git). Socrata authentication uses HTTP Basic Auth
 (Key ID as username, Key Secret as password) — this is Socrata's current
 API Key system, not the older X-App-Token header method.
 
+INCREMENTAL MODE:
+Socrata tracks a system field `:updated_at` on every row, set whenever a
+record is created OR amended. In --incremental mode, this script queries
+only rows changed since the last successful run, using a per-table
+high-water-mark timestamp stored in S3 (s3://<bucket>/pipeline-state/last_run.json).
+This state file lives in S3 (not locally) so it remains readable/writable
+even if this script later runs inside ephemeral Airflow/Docker containers.
+
+NOTE: because crash reports can be amended after the fact, an incremental
+pull may re-fetch a collision_id/unique_id that already exists in an earlier
+file, with updated values. This is expected — deduplication (keeping only the
+most recently ingested version of each ID) happens downstream in dbt's
+staging layer, not in this script.
+
 Usage:
-    python ingestion/ingest.py            # full run (all records)
-    python ingestion/ingest.py --test      # test mode: ~1000 records per table only
+    python ingestion/ingest.py                          # full run, all 3 tables
+    python ingestion/ingest.py --test                    # test mode: ~1000 records per table
+    python ingestion/ingest.py --tables person            # full run, only the 'person' table
+    python ingestion/ingest.py --tables crashes,person     # full run, only these tables
+    python ingestion/ingest.py --incremental               # only records changed since last run
+    python ingestion/ingest.py --incremental --tables person  # incremental, one table only
+    python ingestion/ingest.py --seed-state                 # initialize state (no data fetched) —
+                                                              # run this ONCE after an existing full
+                                                              # pull, before ever using --incremental
 """
 
 import os
@@ -30,6 +52,7 @@ from datetime import datetime, timezone
 
 import requests
 import boto3
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
 # --- Configuration ---------------------------------------------------------
@@ -46,17 +69,49 @@ S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 SOCRATA_BASE_URL = "https://data.cityofnewyork.us/resource"
 
 # Each source table: Socrata dataset ID -> S3 folder name
-TABLES = {
+ALL_TABLES = {
     "crashes": "h9gi-nx95",
     "vehicles": "bm4k-52h4",
     "person": "f55k-p6yu",
 }
+
+
+def _resolve_tables_to_run() -> dict:
+    """
+    Determine which tables to process based on an optional --tables flag.
+    --tables person            -> only 'person'
+    --tables crashes,person    -> only 'crashes' and 'person'
+    (no --tables flag)         -> all tables
+    """
+    if "--tables" in sys.argv:
+        idx = sys.argv.index("--tables")
+        try:
+            requested = sys.argv[idx + 1]
+        except IndexError:
+            raise ValueError("--tables flag requires a value, e.g. --tables person")
+
+        selected_names = [name.strip() for name in requested.split(",")]
+        invalid = [name for name in selected_names if name not in ALL_TABLES]
+        if invalid:
+            raise ValueError(
+                f"Unknown table name(s): {invalid}. Valid options: {list(ALL_TABLES.keys())}"
+            )
+        return {name: ALL_TABLES[name] for name in selected_names}
+
+    return ALL_TABLES
+
+
+TABLES = _resolve_tables_to_run()
 
 PAGE_SIZE = 50000  # Socrata's max recommended page size per request
 LOCAL_RAW_DIR = "ingestion/raw_data"  # temp local landing zone before upload
 
 TEST_MODE = "--test" in sys.argv
 TEST_ROW_LIMIT = 1000  # rows per table when running with --test
+
+INCREMENTAL_MODE = "--incremental" in sys.argv
+SEED_STATE_MODE = "--seed-state" in sys.argv
+STATE_FILE_S3_KEY = "pipeline-state/last_run.json"  # tracks per-table high-water marks
 
 # --- Logging -----------------------------------------------------------------
 
@@ -69,18 +124,64 @@ logger = logging.getLogger(__name__)
 
 # --- Functions ---------------------------------------------------------------
 
-def fetch_table_data(dataset_id: str, table_name: str) -> list[dict]:
+def get_s3_client():
+    return boto3.client(
+        "s3",
+        aws_access_key_id=AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+        region_name=AWS_REGION,
+    )
+
+
+def load_pipeline_state() -> dict:
+    """
+    Read the last-run state file from S3 (s3://<bucket>/pipeline-state/last_run.json).
+    Returns an empty dict if the file doesn't exist yet (e.g. first-ever incremental run).
+    Format: {"crashes": "2026-07-31T00:00:00.000", "vehicles": "...", "person": "..."}
+    """
+    s3_client = get_s3_client()
+    try:
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=STATE_FILE_S3_KEY)
+        state = json.loads(response["Body"].read())
+        logger.info(f"Loaded pipeline state from S3: {state}")
+        return state
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            logger.info("No existing pipeline state file found in S3 — treating as first run.")
+            return {}
+        raise
+
+
+def save_pipeline_state(state: dict) -> None:
+    """
+    Write the updated last-run state file back to S3.
+    """
+    s3_client = get_s3_client()
+    s3_client.put_object(
+        Bucket=S3_BUCKET_NAME,
+        Key=STATE_FILE_S3_KEY,
+        Body=json.dumps(state, indent=2).encode("utf-8"),
+        ContentType="application/json",
+    )
+    logger.info(f"Saved updated pipeline state to S3: {state}")
+
+
+def fetch_table_data(dataset_id: str, table_name: str, since_timestamp: str | None = None) -> list[dict]:
     """
     Paginate through a Socrata dataset and return all records as a list of dicts.
+    If `since_timestamp` is provided (incremental mode), only records with
+    :updated_at greater than that timestamp are fetched.
     """
     all_records = []
     offset = 0
     auth = (SOCRATA_KEY_ID, SOCRATA_KEY_SECRET) if SOCRATA_KEY_ID and SOCRATA_KEY_SECRET else None
 
     page_size = TEST_ROW_LIMIT if TEST_MODE else PAGE_SIZE
-    mode_label = " [TEST MODE]" if TEST_MODE else ""
+    mode_label = " [TEST MODE]" if TEST_MODE else (" [INCREMENTAL]" if since_timestamp else "")
 
     logger.info(f"Starting fetch for '{table_name}' (dataset {dataset_id}){mode_label}")
+    if since_timestamp:
+        logger.info(f"  Filtering to records updated after: {since_timestamp}")
 
     while True:
         url = f"{SOCRATA_BASE_URL}/{dataset_id}.json"
@@ -89,6 +190,8 @@ def fetch_table_data(dataset_id: str, table_name: str) -> list[dict]:
             "$offset": offset,
             "$order": ":id",  # stable ordering across paginated requests
         }
+        if since_timestamp:
+            params["$where"] = f":updated_at > '{since_timestamp}'"
 
         response = requests.get(url, auth=auth, params=params, timeout=60)
         response.raise_for_status()
@@ -133,12 +236,7 @@ def upload_to_s3(local_file_path: str, table_name: str, run_timestamp: str) -> N
     """
     Upload a local file to the appropriate S3 folder for this table.
     """
-    s3_client = boto3.client(
-        "s3",
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_REGION,
-    )
+    s3_client = get_s3_client()
 
     file_name = f"{table_name}_{run_timestamp}.json"
     s3_key = f"{table_name}/{file_name}"
@@ -178,25 +276,61 @@ def validate_config() -> None:
 def main():
     validate_config()
 
+    if SEED_STATE_MODE:
+        # Mark the current moment as the high-water mark for all tables, WITHOUT
+        # fetching or uploading any data. Use this once, right after a full pull
+        # already completed by other means, so the next --incremental run only
+        # picks up genuinely new/changed records instead of re-pulling everything.
+        seed_timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+        seeded_state = {table_name: seed_timestamp for table_name in TABLES}
+        save_pipeline_state(seeded_state)
+        logger.info(f"Seeded pipeline state for tables {list(TABLES.keys())} at {seed_timestamp}")
+        logger.info("No data was fetched. Future --incremental runs will start from this point.")
+        return
+
     run_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    mode_label = " (TEST MODE — limited rows)" if TEST_MODE else ""
+    run_datetime_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+
+    mode_label = " (TEST MODE — limited rows)" if TEST_MODE else (" (INCREMENTAL)" if INCREMENTAL_MODE else "")
     logger.info(f"=== Starting ingestion run: {run_timestamp}{mode_label} ===")
+
+    # Load prior state if running incrementally (ignored entirely otherwise)
+    pipeline_state = load_pipeline_state() if INCREMENTAL_MODE else {}
+    updated_state = dict(pipeline_state)  # copy to update as tables succeed
 
     for table_name, dataset_id in TABLES.items():
         try:
-            records = fetch_table_data(dataset_id, table_name)
+            since_timestamp = pipeline_state.get(table_name) if INCREMENTAL_MODE else None
+
+            if INCREMENTAL_MODE and not since_timestamp:
+                logger.info(
+                    f"  No prior state for '{table_name}' — this will run as a full pull "
+                    f"and establish the initial high-water mark."
+                )
+
+            records = fetch_table_data(dataset_id, table_name, since_timestamp=since_timestamp)
 
             if not records:
-                logger.warning(f"No records fetched for '{table_name}' — skipping upload.")
+                logger.warning(f"No new/changed records for '{table_name}' — nothing to upload.")
+                # Still advance the high-water mark to "now" so we don't re-check the same
+                # empty window forever.
+                if INCREMENTAL_MODE:
+                    updated_state[table_name] = run_datetime_iso
                 continue
 
             local_path = save_local_json(records, table_name, run_timestamp)
             upload_to_s3(local_path, table_name, run_timestamp)
 
+            if INCREMENTAL_MODE:
+                updated_state[table_name] = run_datetime_iso
+
         except requests.exceptions.RequestException as e:
             logger.error(f"API request failed for '{table_name}': {e}")
         except Exception as e:
             logger.error(f"Unexpected error processing '{table_name}': {e}")
+
+    if INCREMENTAL_MODE:
+        save_pipeline_state(updated_state)
 
     logger.info("=== Ingestion run complete ===")
 
