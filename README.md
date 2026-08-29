@@ -75,9 +75,9 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - Credentials (Socrata API Key ID/Secret, AWS Access Key/Secret) stored in a local `.env` file, excluded from Git.
 - `ingestion/ingest.py` pulls Crashes, Vehicles, and Person tables from the Socrata API (paginated), saves raw JSON locally, then uploads to the matching S3 folder.
 - **Auth gotcha fixed:** Socrata's current API Key system requires HTTP Basic Auth (Key ID + Secret), not the older `X-App-Token` header — full explanation in the doc below.
-- Script supports `--test` (small sample, ~1,000 rows/table) and full-run modes via the same file — no code changes needed to switch.
-- Test run completed successfully (files confirmed in S3); full run pending.
-- Full step-by-step walkthrough: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md)
+- Script supports `--test` (small sample, ~1,000 rows/table) and `--tables <name(s)>` (run specific table(s) only) flags via the same file — no code changes needed to switch modes. **Windows gotcha:** always invoke with the explicit `python` prefix (`python ingestion\ingest.py`) — running `ingest.py` directly can silently drop command-line arguments.
+- **Full ingestion complete.** All three tables successfully pulled and uploaded to S3: Crashes (2,269,187 records), Vehicles (4,551,002 records), Person (5,984,110 records).
+- Full step-by-step walkthrough, including two gotchas encountered (Socrata auth fix, Windows argument-passing issue) and their fixes: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md)
 
 ---
 
@@ -125,8 +125,8 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - [x] Step 1: Schema/data model design (staging → intermediate → marts)
 - [x] **Step 2: Git/GitHub repo setup** — GitHub account created, Git for Windows + GitHub CLI installed and authenticated (`gh auth login`), local repo initialized at `D:\Projects\nyc-collisions-data-engineering` with `dags/`, `dbt/`, `ingestion/`, `docs/` folder structure. Full walkthrough: [`docs/git-setup.md`](./docs/git-setup.md)
 - [x] **Step 3: AWS setup** — Account, MFA, billing alerts, IAM user, S3 bucket (`nyc-collisions-gustavo-raw`), Athena query settings + `nyc_collisions` database. Full details: [`docs/aws-setup.md`](./docs/aws-setup.md)
-- [x] **Step 4: Python ingestion script** (Socrata API → S3) — script built and tested successfully; full multi-million-row run pending. Full details: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md) — **currently here**
-- [ ] Step 5: Athena table definitions (raw S3 data → queryable tables)
+- [x] **Step 4: Python ingestion script** (Socrata API → S3) — complete. All 3 tables fully ingested (Crashes: 2,269,187 / Vehicles: 4,551,002 / Person: 5,984,110 records). Full details: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md)
+- [ ] **Step 5: Athena table definitions** — **currently here** (first task: row-count sanity check against the confirmed totals above)
 - [ ] Step 6: dbt Cloud setup (connect to Athena, build staging/intermediate/marts models + tests)
 - [ ] Step 7: Airflow (Docker) DAG — orchestrates ingestion + dbt Cloud trigger
 - [ ] Step 8: Looker Studio dashboard (connect to marts, build visuals)

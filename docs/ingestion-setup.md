@@ -82,20 +82,66 @@ Updated `.env` to store `SOCRATA_KEY_ID` and `SOCRATA_KEY_SECRET` separately (in
 
 ## 6. Test Mode vs. Full Run
 
-The script supports two modes via a command-line flag — no code changes needed to switch between them:
+The script supports two independent flags via command-line arguments — no code changes needed to switch behavior:
 
 ```
-python ingestion/ingest.py --test    # test mode: ~1,000 rows per table only
-python ingestion/ingest.py           # full run: all records, fully paginated
+python ingestion/ingest.py --test              # test mode: ~1,000 rows per table only
+python ingestion/ingest.py                     # full run: all records, all 3 tables
+python ingestion/ingest.py --tables person      # full run, but only the named table(s)
+python ingestion/ingest.py --tables crashes,person   # full run, multiple named tables
 ```
 
-How it works: `TEST_MODE = "--test" in sys.argv` checks whether `--test` was typed after the script name. When `True`, the script fetches a single small page (1,000 rows) per table and stops; when `False` (default), it paginates through the entire dataset in 50,000-row batches until exhausted.
+How it works:
+- `TEST_MODE = "--test" in sys.argv` checks whether `--test` was typed after the script name. When `True`, the script fetches a single small page (1,000 rows) per table and stops.
+- `--tables <name(s)>` filters which tables get processed at all, via a comma-separated list. Useful for re-running just one table after a partial/interrupted run, without re-fetching and re-uploading tables that already completed successfully.
 
 **Test run result (2026-08-27):** Successfully authenticated and uploaded ~1,000-row sample files for all three tables to their respective S3 folders — confirmed visually in the S3 console.
 
 **Full run:** Not yet executed. Expected to take significantly longer than the test run — the Crashes table alone has roughly 2.3 million rows — so it should be run when the terminal can be left uninterrupted for a while (likely 15–60+ minutes depending on connection speed and API responsiveness).
 
+## 7. Recovering from an Interrupted Run
+
+The first full-run attempt was interrupted by an unplanned computer restart partway through. Rather than blindly re-running the whole script (which would have created duplicate files for tables that had already finished — wasting storage and causing double-counted rows later), the situation was diagnosed as follows:
+
+**How we determined what actually completed (inference, not a log file):**
+- `run_timestamp` is generated once per script execution and reused across all three tables' filenames in that run — so matching timestamps across files (e.g., `crashes_20260828T042616Z.json` and `vehicles_20260828T042616Z.json` sharing `T042616Z`) confirm they came from the same run.
+- The script only calls `upload_to_s3()` *after* a table's full fetch-and-local-save completes — so a real (non-empty) file appearing in S3 implies that table's full pipeline ran to completion. S3 doesn't list partial/failed uploads as objects.
+- `person/` had no file matching that run's timestamp — only the earlier test file — indicating the run was interrupted before Person finished (or started) uploading.
+
+**Conclusion:** Crashes (1.7 GB) and Vehicles (2.2 GB) completed successfully; Person did not.
+
+**Fix attempted:** Added a `--tables` flag to the script (see Usage above) to re-run only the incomplete table:
+```
+python ingestion/ingest.py --tables person
+```
+
+### ⚠️ Second issue: running the script without the `python` prefix
+The command was run as `ingest.py --tables person` (missing the `python` prefix). On Windows, invoking a `.py` file directly like this relies on a file-association handler, which does not reliably pass command-line arguments through to `sys.argv` — as a result, the `--tables person` filter was silently dropped, and the script fell back to its default behavior of processing **all three tables**, re-fetching and re-uploading Crashes and Vehicles unnecessarily (duplicate large files in S3) alongside the now-completed Person table.
+
+**Lesson learned:** Always invoke Python scripts with the explicit `python` command:
+```
+python ingestion\ingest.py --tables person
+```
+Never run `ingest.py --tables person` directly on Windows.
+
+### Cleanup performed
+This accidental full re-run did, however, produce a **complete, consistent full run of all three tables** in a single execution (run timestamp `T054618Z`), with real record counts captured in the logs:
+
+| Table | Total Records |
+|---|---|
+| Crashes | 2,269,187 |
+| Vehicles | 4,551,002 |
+| Person | 5,984,110 |
+
+Since Crashes and Vehicles now had two full files each (the earlier `T042616Z` versions and the new `T054618Z` versions), the **older duplicate files were deleted** from S3, keeping one clean, consistent set of full files (all three sharing timestamp `T054618Z`) plus the original small test files in each folder.
+
+**Final state per folder:** 1 small test file (~300–750 KB) + 1 full data file — no duplicates.
+
+### ⚠️ Verification caveat
+The row counts above come directly from the ingestion script's own logs (confirmed, not inferred this time). **Planned sanity check once Athena is set up (Step 5):** query row counts for `crashes`, `vehicles`, and `person` tables in Athena and confirm they match these numbers (2,269,187 / 4,551,002 / 5,984,110) — validates that S3 → Athena table definitions aren't dropping or duplicating rows.
+
 ## Next Steps
-- [ ] Run the full ingestion (`python ingestion/ingest.py`, no flag) to pull all records for Crashes, Vehicles, and Person into S3
-- [ ] Confirm full files landed correctly in S3 (check file sizes/row counts)
+- [x] Run the full ingestion for all three tables (completed via the accidental-but-successful full re-run, `T054618Z`)
+- [x] Confirm full files landed correctly in S3 (verified: 1 test + 1 full file per folder, duplicates cleaned up)
+- [ ] **Sanity check:** once Athena tables are defined, compare row counts per table against the confirmed totals above (2,269,187 / 4,551,002 / 5,984,110)
 - [ ] Move to Step 5: define Athena tables over this raw S3 data
