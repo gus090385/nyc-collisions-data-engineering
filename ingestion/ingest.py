@@ -9,7 +9,9 @@ Pulls data from three related Socrata (NYC Open Data) tables:
 For each table:
   1. Paginate through the Socrata API to fetch all records (or only records
      changed since the last run, in --incremental mode)
-  2. Save the raw JSON response to a local file
+  2. Save the raw records to a local file in NDJSON format (one JSON object
+     per line — required for Athena's JSON SerDe; a single wrapping JSON
+     array is NOT supported and will fail at query time)
   3. Upload that file to the corresponding S3 folder
 
 Credentials (Socrata API Key ID/Secret, AWS keys) are loaded from a local .env
@@ -219,16 +221,26 @@ def fetch_table_data(dataset_id: str, table_name: str, since_timestamp: str | No
 
 def save_local_json(records: list[dict], table_name: str, run_timestamp: str) -> str:
     """
-    Save records to a local JSON file. Returns the local file path.
+    Save records to a local file in NDJSON (newline-delimited JSON) format —
+    one complete JSON object per line, with NO wrapping array and NO commas
+    between records. Returns the local file path.
+
+    IMPORTANT: Athena's JSON readers (Hive JsonSerDe / OpenX JsonSerDe) require
+    NDJSON and do NOT support a single file containing one large JSON array.
+    Writing a plain array here (e.g. via json.dump(records, f)) will produce
+    files that upload successfully but fail at Athena query time with
+    'HIVE_CURSOR_ERROR: Row is not a valid JSON Object'.
     """
     os.makedirs(LOCAL_RAW_DIR, exist_ok=True)
     file_name = f"{table_name}_{run_timestamp}.json"
     file_path = os.path.join(LOCAL_RAW_DIR, file_name)
 
     with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(records, f)
+        for record in records:
+            f.write(json.dumps(record))
+            f.write("\n")
 
-    logger.info(f"Saved local file: {file_path}")
+    logger.info(f"Saved local file (NDJSON): {file_path}")
     return file_path
 
 

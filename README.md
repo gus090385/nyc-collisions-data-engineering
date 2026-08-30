@@ -95,6 +95,13 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - **Incremental ingestion designed and tested.** Uses Socrata's `:updated_at` system field with a per-table high-water-mark state file stored in S3 (`pipeline-state/last_run.json`, not local disk — survives across Docker/Airflow runs later). New flags: `--seed-state` (initialize baseline) and `--incremental` (fetch only changed records). Amended records are expected to create duplicate IDs across files by design; deduplication happens downstream in dbt's staging layer, not at ingestion time.
 - Full step-by-step walkthrough, including three gotchas encountered (Socrata auth fix, Windows argument-passing issue, SoQL system-field colon syntax) and their fixes: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md)
 
+### Athena Table Setup (Summary)
+- Used a hybrid approach: **AWS Glue Crawler** for initial schema discovery + table creation, then manual review — rather than hand-writing DDL for three wide (25–45+ column) tables.
+- IAM role `AWSGlueServiceRole-nyc-collisions` created for the crawler; crawler `nyc-collisions-crawler` targets all three S3 folders, registering tables `raw_crashes`, `raw_vehicles`, `raw_person` in the `nyc_collisions` database.
+- **Major gotcha found and fixed:** Athena's JSON reader requires NDJSON (one JSON object per line) — the ingestion script was originally writing a single wrapping JSON array per file, which crawled successfully (schema detection) but failed at actual query time (`HIVE_CURSOR_ERROR`). Fixed by updating the ingestion script to write NDJSON, then regenerating all three source files.
+- **Validated end-to-end:** row counts in Athena match the ingestion script's own logged counts exactly for all three tables (2,269,187 / 4,551,002 / 5,984,110).
+- Full step-by-step walkthrough: [`docs/athena-setup.md`](./docs/athena-setup.md)
+
 ---
 
 ## Schema Design (Confirmed)
@@ -142,8 +149,8 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - [x] **Step 2: Git/GitHub repo setup** — GitHub account created, Git for Windows + GitHub CLI installed and authenticated (`gh auth login`), local repo initialized at `D:\Projects\nyc-collisions-data-engineering` with `dags/`, `dbt/`, `ingestion/`, `docs/` folder structure. Full walkthrough: [`docs/git-setup.md`](./docs/git-setup.md)
 - [x] **Step 3: AWS setup** — Account, MFA, billing alerts, IAM user, S3 bucket (`nyc-collisions-gustavo-raw`), Athena query settings + `nyc_collisions` database. Full details: [`docs/aws-setup.md`](./docs/aws-setup.md)
 - [x] **Step 4: Python ingestion script** (Socrata API → S3) — complete. All 3 tables fully ingested (Crashes: 2,269,187 / Vehicles: 4,551,002 / Person: 5,984,110 records). Full details: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md)
-- [ ] **Step 5: Athena table definitions** — **currently here** (first task: row-count sanity check against the confirmed totals above)
-- [ ] Step 6: dbt Cloud setup (connect to Athena, build staging/intermediate/marts models + tests)
+- [x] **Step 5: Athena table definitions** — complete. Glue Crawler + manual review; found and fixed a major JSON-format bug (array vs. NDJSON); row-count sanity check passed exactly for all 3 tables. Full details: [`docs/athena-setup.md`](./docs/athena-setup.md)
+- [ ] **Step 6: dbt Cloud setup** — **currently here**
 - [ ] Step 7: Airflow (Docker) DAG — orchestrates ingestion + dbt Cloud trigger
 - [ ] Step 8: Looker Studio dashboard (connect to marts, build visuals)
 - [ ] Step 9: Documentation/polish (architecture diagram, resume write-up)

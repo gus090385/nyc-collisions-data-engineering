@@ -182,10 +182,46 @@ NYC Open Data's Crashes and Vehicles datasets are currently flagged as **tempora
 2. Ran `--incremental` → initially failed with `400 Bad Request` due to the missing colon on `:updated_at` (see Gotcha above); fixed and re-ran.
 3. Re-ran `--incremental` → succeeded, correctly returned 0 records for all 3 tables (consistent with the known source-side update pause), and advanced the state file's timestamps.
 
+## 9. Athena Compatibility Bug: JSON Array vs. NDJSON
+
+**Symptom:** After setting up a Glue Crawler and Athena tables (Step 5) over the raw S3 data, running `SELECT COUNT(*) FROM raw_crashes` failed with:
+```
+HIVE_CURSOR_ERROR: Failed to read file at s3://nyc-collisions-gustavo-raw/crashes/crashes_....json
+```
+
+**Initial (incorrect) hypothesis:** Assumed the referenced file had been deleted during earlier S3 cleanup. Checking the S3 console directly disproved this — the file existed, with the correct size, and was the only file in the folder.
+
+**Actual root cause:** Athena's JSON readers (`Hive JsonSerDe` and `OpenX JsonSerDe`) require **NDJSON (newline-delimited JSON)** — one complete, standalone JSON object per line, with no wrapping array and no commas between records. The ingestion script's `save_local_json()` function was instead writing each table's entire result set as a single large JSON **array** via `json.dump(records, f)` — e.g. `[{...}, {...}, {...}]` — a format Athena's JSON SerDe cannot parse, regardless of file size. This is a well-documented AWS limitation, not specific to this dataset.
+
+Notably, the earlier Glue Crawler setup (with a custom `json-array-classifier` using JSON path `$[*]`) *was* able to correctly infer the schema from this array format — schema **detection** and query-time **reading** use different code paths in Glue/Athena, so the crawler succeeding did not guarantee queries would work.
+
+**Fix:**
+1. Updated `save_local_json()` to write NDJSON instead of a JSON array:
+   ```python
+   with open(file_path, "w", encoding="utf-8") as f:
+       for record in records:
+           f.write(json.dumps(record))
+           f.write("\n")
+   ```
+2. Deleted the three existing malformed full-data files from S3 (`crashes/`, `vehicles/`, `person/`).
+3. Re-ran the full ingestion (`python ingestion/ingest.py`) with the corrected script to regenerate all three files in proper NDJSON format.
+4. Re-ran the Glue Crawler to refresh table metadata against the corrected files (the custom array-based classifier simply doesn't match NDJSON and is skipped in favor of Glue's default JSON classifier — no crawler reconfiguration was needed).
+
+### ✅ Final Validation (Sanity Check)
+With the corrected NDJSON files in place, the planned row-count sanity check (see "Verification caveat" note above) was run in Athena and **matched exactly**:
+
+| Table | Ingestion Log Count | Athena `COUNT(*)` | Match |
+|---|---|---|---|
+| Crashes | 2,269,187 | 2,269,187 | ✅ |
+| Vehicles | 4,551,002 | 4,551,002 | ✅ |
+| Person | 5,984,110 | 5,984,110 | ✅ |
+
+This confirms the full pipeline — Socrata API → Python → S3 → Glue Crawler → Athena — is working correctly end-to-end with no data loss or duplication.
+
 ## Next Steps
 - [x] Run the full ingestion for all three tables (completed via the accidental-but-successful full re-run, `T054618Z`)
 - [x] Confirm full files landed correctly in S3 (verified: 1 test + 1 full file per folder, duplicates cleaned up)
 - [x] Design and implement incremental ingestion (`--incremental` / `--seed-state`), tested successfully
-- [ ] **Sanity check:** once Athena tables are defined, compare row counts per table against the confirmed totals above (2,269,187 / 4,551,002 / 5,984,110)
-- [ ] Move to Step 5: define Athena tables over this raw S3 data
+- [x] Fix NDJSON format bug and re-validate full pipeline via Athena row-count sanity check (all 3 tables match exactly)
+- [ ] Move to Step 5 (continued): finalize Athena schema review / dbt Cloud setup (Step 6)
 - [ ] (Future, Step 7) Wire `--incremental` into the Airflow DAG for scheduled runs
