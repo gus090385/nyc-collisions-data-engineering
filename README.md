@@ -102,6 +102,17 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - **Validated end-to-end:** row counts in Athena match the ingestion script's own logged counts exactly for all three tables (2,269,187 / 4,551,002 / 5,984,110).
 - Full step-by-step walkthrough: [`docs/athena-setup.md`](./docs/athena-setup.md)
 
+### dbt Cloud Setup (Summary)
+- Free dbt Cloud account created; project `nyc_collisions` connected to Athena (region `us-east-1`, database `nyc_collisions`, S3 staging directory reusing the existing `athena-query-results/` folder).
+- **Three setup gotchas found and fixed:**
+  1. dbt Cloud's newer **"Fusion" engine doesn't support Athena** — every environment must be explicitly set to the **"Compatible"** (classic dbt Core) release track instead.
+  2. The Development environment silently failed to persist during onboarding (due to the Fusion connection test failing) — had to be created manually.
+  3. GitHub repository connection needed an explicit GitHub App install, scoped to just this one repo (least-privilege).
+- Connection test succeeded; dbt Cloud Studio confirmed working with the real repo contents visible.
+- Ran "Initialize dbt project," scaffolding the standard dbt folder structure (`models/`, `macros/`, `seeds/`, `snapshots/`, `tests/`, `dbt_project.yml`) directly into the connected GitHub repo.
+- **Workflow note:** `master` is protected in dbt Cloud Studio — changes are committed to a feature branch first, then merged via GitHub PR (realistic Git practice, carried forward for all dbt work).
+- Full step-by-step walkthrough, including all three gotchas: [`docs/dbt-setup.md`](./docs/dbt-setup.md)
+
 ---
 
 ## Schema Design (Confirmed)
@@ -150,7 +161,7 @@ dbt's generic tests (`not_null`, `unique`, `relationships`, `accepted_values`) r
 - [x] **Step 3: AWS setup** — Account, MFA, billing alerts, IAM user, S3 bucket (`nyc-collisions-gustavo-raw`), Athena query settings + `nyc_collisions` database. Full details: [`docs/aws-setup.md`](./docs/aws-setup.md)
 - [x] **Step 4: Python ingestion script** (Socrata API → S3) — complete. All 3 tables fully ingested (Crashes: 2,269,187 / Vehicles: 4,551,002 / Person: 5,984,110 records). Full details: [`docs/ingestion-setup.md`](./docs/ingestion-setup.md)
 - [x] **Step 5: Athena table definitions** — complete. Glue Crawler + manual review; found and fixed a major JSON-format bug (array vs. NDJSON); row-count sanity check passed exactly for all 3 tables. Full details: [`docs/athena-setup.md`](./docs/athena-setup.md)
-- [ ] **Step 6: dbt Cloud setup** — **currently here**
+- [ ] **Step 6: dbt Cloud setup** — in progress. Account, Athena connection, and GitHub repo connection all working (after resolving 3 gotchas — see [`docs/dbt-setup.md`](./docs/dbt-setup.md)); dbt project initialized. Next: build staging models. — **currently here**
 - [ ] Step 7: Airflow (Docker) DAG — orchestrates ingestion + dbt Cloud trigger
 - [ ] Step 8: Looker Studio dashboard (connect to marts, build visuals)
 - [ ] Step 9: Documentation/polish (architecture diagram, resume write-up)
